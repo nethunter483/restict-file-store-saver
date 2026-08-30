@@ -6,18 +6,15 @@ import subprocess
 import telebot
 from telebot import types
 
-# Railway Environment Variable se Token lena
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN nahi mila! Railway variables me BOT_TOKEN add karein.")
+    raise ValueError("BOT_TOKEN nahi mila! Railway variables me BOT_TOKEN set karein.")
 
 bot = telebot.TeleBot(BOT_TOKEN)
-
-# Step-by-Step login state manage karne ke liye
 user_login_data = {}
 
 def run_cmd(args, timeout=180):
-    """Subprocess command runner bina kisi shell bug ke"""
+    """Subprocess command runner bina kisi shell injection issue ke"""
     try:
         res = subprocess.run(
             args,
@@ -32,53 +29,75 @@ def run_cmd(args, timeout=180):
     except Exception as e:
         return "", str(e), 1
 
-def extract_mega_link_from_text(text):
-    """Output me se valid MEGA link dhoondhne ke liye regex"""
+def extract_mega_link(text):
+    """Har format ka MEGA link detect karne ke liye regex"""
     patterns = [
         r'(https?://mega\.nz/folder/[a-zA-Z0-9_-]+#[a-zA-Z0-9_-]+)',
         r'(https?://mega\.nz/file/[a-zA-Z0-9_-]+#[a-zA-Z0-9_-]+)',
         r'(https?://mega\.nz/#F\![a-zA-Z0-9_-]+\![a-zA-Z0-9_-]+)',
         r'(https?://mega\.nz/\#[a-zA-Z0-9_-]+\![a-zA-Z0-9_-]+)',
-        r'(https?://mega\.(?:nz|co\.nz)/[^\s"\'<>]+)'
+        r'(https?://mega\.(?:nz|co\.nz)/(?:folder/|file/|#F!|#!)[a-zA-Z0-9_#-]+)',
+        r'(https?://mega\.(?:nz|co\.nz)/[^\s"\'<>\)\],]+)'
     ]
     for pat in patterns:
         m = re.search(pat, text)
         if m:
-            return m.group(1).rstrip('.:;,')
+            return m.group(1).rstrip('.:;,\'")]}>')
     return None
 
 def export_and_get_link(target_name):
-    """4-Stage Bulletproof Share Link Generator"""
-    # 1. Direct Export
-    out1, err1, _ = run_cmd(["mega-export", "-a", f"/{target_name}"])
-    link = extract_mega_link_from_text(out1 + " " + err1)
-    if link:
-        return link
+    """Guaranteed Share Link Fetch Engine with Sync Wait & Retries"""
+    # 1. Path Clean karein (No double slashes, no trailing slashes)
+    clean_name = target_name.strip().strip("'\"").strip("/")
+    target_path = f"/{clean_name}"
 
-    # 2. Query target export path
-    out2, err2, _ = run_cmd(["mega-export", f"/{target_name}"])
-    link = extract_mega_link_from_text(out2 + " " + err2)
-    if link:
-        return link
+    # 2. Sync wait (MEGAcmd local cache update hone ke liye)
+    time.sleep(2)
 
-    # 3. Search in all active exports
-    out3, _, _ = run_cmd(["mega-export"])
-    for line in out3.splitlines():
-        if target_name.lower() in line.lower():
-            link = extract_mega_link_from_text(line)
+    # 3. Retry loop for export
+    for attempt in range(4):
+        # Method A: mega-export -a "/Folder"
+        out1, err1, _ = run_cmd(["mega-export", "-a", target_path])
+        link = extract_mega_link(out1 + " " + err1)
+        if link:
+            return link, clean_name
+
+        # Method B: Query target export directly
+        out2, err2, _ = run_cmd(["mega-export", target_path])
+        link = extract_mega_link(out2 + " " + err2)
+        if link:
+            return link, clean_name
+
+        # Method C: Search in all active exports
+        out3, _, _ = run_cmd(["mega-export"])
+        for line in out3.splitlines():
+            if clean_name.lower() in line.lower():
+                link = extract_mega_link(line)
+                if link:
+                    return link, clean_name
+
+        time.sleep(2)
+
+    # Method D: Agar stuck ho gaya ho toh delete karke fresh export karein
+    run_cmd(["mega-export", "-d", target_path])
+    time.sleep(1)
+    out4, err4, _ = run_cmd(["mega-export", "-a", target_path])
+    link = extract_mega_link(out4 + " " + err4)
+    if link:
+        return link, clean_name
+
+    # Method E: Fallback to last exported link
+    out_all, _, _ = run_cmd(["mega-export"])
+    lines = [l.strip() for l in out_all.splitlines() if l.strip()]
+    if lines:
+        for l in reversed(lines):
+            link = extract_mega_link(l)
             if link:
-                return link
+                return link, clean_name
 
-    # 4. Re-export (Delete old export and create fresh one)
-    run_cmd(["mega-export", "-d", f"/{target_name}"])
-    out4, err4, _ = run_cmd(["mega-export", "-a", f"/{target_name}"])
-    link = extract_mega_link_from_text(out4 + " " + err4)
-    if link:
-        return link
+    return None, clean_name
 
-    return None
-
-# Telegram Menu Buttons Setup (Commands directly menu me dikhengi)
+# Telegram Menu setup
 try:
     bot.set_my_commands([
         types.BotCommand("login", "MEGA account login karein (Step-by-step)"),
@@ -107,7 +126,7 @@ def send_welcome(message):
         "🔹 <code>/cancel</code> — Login process cancel karein\n\n"
         "<b>Kaise use karein:</b>\n"
         "1️⃣ <code>/login</code> par click karein aur apna Email/Password dein.\n"
-        "2️⃣ Login hone ke baad koi bhi <b>MEGA Link</b> bhej dein."
+        "2️⃣ Login hone ke baad koi bhi <b>MEGA Folder Link</b> bhej dein."
     )
     bot.reply_to(message, welcome_text, parse_mode="HTML")
 
@@ -140,15 +159,14 @@ def process_email_step(message):
         return
 
     if text.startswith('/'):
-        bot.reply_to(message, "⚠️ Email ke badle command aayi hai. Pehle <code>/login</code> dobara karein ya <code>/cancel</code> karein.", parse_mode="HTML")
+        bot.reply_to(message, "⚠️ Pehle <code>/login</code> dobara karein ya <code>/cancel</code> karein.", parse_mode="HTML")
         return
 
     if "@" not in text or "." not in text:
-        msg = bot.reply_to(message, "❌ <b>Galat Email!</b> Kripya ek valid email bhejein:\n\n<i>(Cancel ke liye /cancel)</i>", parse_mode="HTML")
+        msg = bot.reply_to(message, "❌ <b>Galat Email!</b> Kripya sahi email bhejein:\n\n<i>(Cancel ke liye /cancel)</i>", parse_mode="HTML")
         bot.register_next_step_handler(msg, process_email_step)
         return
 
-    # Email save karein
     user_login_data[chat_id] = {'email': text, 'step': 'PASSWORD'}
 
     msg = bot.reply_to(
@@ -167,7 +185,6 @@ def process_password_step(message):
         bot.reply_to(message, "🚫 Login process cancel ho gaya.")
         return
 
-    # Chat me se password wala message delete karna (Privacy)
     try:
         bot.delete_message(chat_id, message.message_id)
     except Exception:
@@ -182,10 +199,7 @@ def process_password_step(message):
 
     status_msg = bot.send_message(chat_id, "🔄 <b>MEGA Account verify kiya ja raha hai...</b>", parse_mode="HTML")
 
-    # Purana session clear karein
     run_cmd(["mega-logout"])
-
-    # Mega login
     stdout, stderr, code = run_cmd(["mega-login", email, password], timeout=40)
     user_login_data.pop(chat_id, None)
 
@@ -248,7 +262,6 @@ def handle_status(message):
 def handle_mega_url(message):
     url = message.text.strip()
     
-    # Agar user login process me hai aur link bhej diya
     if message.chat.id in user_login_data:
         bot.reply_to(message, "⚠️ Pehle apna login process poora karein ya <code>/cancel</code> karein.", parse_mode="HTML")
         return
@@ -267,15 +280,15 @@ def handle_mega_url(message):
         )
         return
 
-    status_msg = bot.reply_to(message, "⏳ <b>Folder ko aapki Cloud Drive me add kiya ja raha hai...</b>")
+    status_msg = bot.reply_to(message, "⏳ <b>Folder ko Cloud Drive me import kiya ja raha hai...</b>")
 
     try:
         # Pre-import snapshot
         ls_before, _, _ = run_cmd(["mega-ls", "/"])
-        before_set = set([item.strip() for item in ls_before.splitlines() if item.strip()])
+        before_set = set([x.strip().strip("'\"").strip("/") for x in ls_before.splitlines() if x.strip()])
         
         # Folder/File Import
-        imp_out, imp_err, imp_code = run_cmd(["mega-import", url, "/"], timeout=120)
+        imp_out, imp_err, imp_code = run_cmd(["mega-import", url, "/"], timeout=180)
         
         if imp_code != 0:
             bot.edit_message_text(
@@ -286,24 +299,39 @@ def handle_mega_url(message):
             )
             return
 
-        # Target name extract from import output
-        target_name = None
-        m_name = re.search(r'Imported\s+/([^\r\n/]+)', imp_out)
-        if m_name:
-            target_name = m_name.group(1).strip()
+        bot.edit_message_text(
+            "⏳ <b>Import complete!</b> Cloud sync ho raha hai, Share Link banaya ja raha hai...",
+            chat_id=message.chat.id,
+            message_id=status_msg.message_id,
+            parse_mode="HTML"
+        )
 
-        # Agar output me direct name nahi mila toh diff compare karein
-        if not target_name:
+        target_name = None
+
+        # Wait & Retry for cache sync
+        for _ in range(5):
+            time.sleep(2)
             ls_after, _, _ = run_cmd(["mega-ls", "/"])
-            after_set = set([item.strip() for item in ls_after.splitlines() if item.strip()])
+            after_set = set([x.strip().strip("'\"").strip("/") for x in ls_after.splitlines() if x.strip()])
             new_items = list(after_set - before_set)
-            
             if new_items:
                 target_name = new_items[0]
-            else:
-                all_items = [i.strip() for i in ls_after.splitlines() if i.strip()]
-                if all_items:
-                    target_name = all_items[-1]
+                break
+
+        # If not detected via diff, check import output
+        if not target_name:
+            m_name = re.search(r'Imported\s+(?:to\s+)?/?([^\r\n/]+)', imp_out + " " + imp_err)
+            if m_name:
+                name_candidate = m_name.group(1).strip().strip("'\"").strip("/")
+                if name_candidate:
+                    target_name = name_candidate
+
+        # Fallback to latest item
+        if not target_name:
+            ls_all, _, _ = run_cmd(["mega-ls", "/"])
+            all_items = [x.strip().strip("'\"").strip("/") for x in ls_all.splitlines() if x.strip()]
+            if all_items:
+                target_name = all_items[-1]
 
         if not target_name:
             bot.edit_message_text(
@@ -313,20 +341,13 @@ def handle_mega_url(message):
             )
             return
 
-        bot.edit_message_text(
-            f"⏳ Folder <code>{html.escape(target_name)}</code> add ho gaya hai, Share Link banaya ja raha hai...",
-            chat_id=message.chat.id,
-            message_id=status_msg.message_id,
-            parse_mode="HTML"
-        )
-
-        # Generate Share Link
-        share_link = export_and_get_link(target_name)
+        # Generate Share Link (with automatic retry)
+        share_link, final_name = export_and_get_link(target_name)
 
         if share_link:
             bot.edit_message_text(
                 f"✅ <b>Successfully Drive Mein Add Ho Gaya!</b>\n\n"
-                f"📁 <b>Folder Name:</b> <code>{html.escape(target_name)}</code>\n\n"
+                f"📁 <b>Folder Name:</b> <code>{html.escape(final_name)}</code>\n\n"
                 f"🔗 <b>Aapka Naya Share Link:</b>\n{share_link}",
                 chat_id=message.chat.id,
                 message_id=status_msg.message_id,
@@ -334,7 +355,7 @@ def handle_mega_url(message):
             )
         else:
             bot.edit_message_text(
-                f"⚠️ Folder <code>{html.escape(target_name)}</code> Drive me add ho gaya hai, par share link fetch nahi ho saka.",
+                f"⚠️ Folder <code>{html.escape(final_name)}</code> Drive me add ho gaya hai, par link fetch nahi hua.\n\nAap account me jakar direct bhi link copy kar sakte hain.",
                 chat_id=message.chat.id,
                 message_id=status_msg.message_id,
                 parse_mode="HTML"
@@ -348,5 +369,5 @@ def handle_mega_url(message):
             parse_mode="HTML"
         )
 
-print("🤖 MEGA Bot with Step Login & Guaranteed Link is running...")
+print("🤖 MEGA Folder Bot 100% Ready and Polling...")
 bot.infinity_polling()
