@@ -1,1 +1,4 @@
-pyTelegramBotAPI
+python-telegram-bot[http2]>=20.0
+playwright
+requests
+python-dotenv
