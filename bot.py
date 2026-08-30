@@ -14,12 +14,12 @@ bot = telebot.TeleBot(BOT_TOKEN)
 user_login_data = {}
 
 def strip_ansi(text):
-    """Terminal ke hidden color codes ko hatane ke liye"""
+    """Terminal ke color aur escape codes strip karne ke liye"""
     ansi_escape = re.compile(r'(?:\x1B[@-_]|[\x80-\x9F])[0-?]*[ -/]*[@-~]')
     return ansi_escape.sub('', text)
 
 def run_cmd(args, timeout=180, input_data="yes\nyes\nyes\n"):
-    """Subprocess runner jo Terms/Prompts ko automatically 'yes' bhejta hai"""
+    """Subprocess command runner with auto-confirmation"""
     try:
         res = subprocess.run(
             args,
@@ -38,7 +38,7 @@ def run_cmd(args, timeout=180, input_data="yes\nyes\nyes\n"):
         return "", str(e), 1
 
 def extract_mega_link(text):
-    """Output me se clean MEGA share link nikalne ke liye regex"""
+    """Regex to find any valid MEGA link"""
     cleaned = strip_ansi(text)
     patterns = [
         r'(https?://mega\.nz/folder/[a-zA-Z0-9_-]+#[a-zA-Z0-9_-]+)',
@@ -54,35 +54,55 @@ def extract_mega_link(text):
             return m.group(1).rstrip('.:;,\'")]}>')
     return None
 
+def parse_all_exports():
+    """Account ke saare active share links ko parse karne ke liye"""
+    out, _, _ = run_cmd(["mega-export"])
+    exports = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.search(r'(/[^:]+):\s*(https?://mega\.(?:nz|co\.nz)/[^\s]+)', line)
+        if m:
+            path = m.group(1).strip().strip("'\"").strip("/")
+            url = m.group(2).strip().rstrip('.:;,\'")]}>')
+            exports[path.lower()] = url
+        else:
+            m2 = re.search(r'\[([^\]]+)\]\s*.*?(https?://mega\.(?:nz|co\.nz)/[^\s]+)', line)
+            if m2:
+                path = m2.group(1).strip().strip("'\"").strip("/")
+                url = m2.group(2).strip().rstrip('.:;,\'")]}>')
+                exports[path.lower()] = url
+    return exports
+
 def export_and_get_link(target_name):
-    """Guaranteed Share Link Fetch Engine"""
+    """Force sync aur auto-export engine"""
     clean_name = target_name.strip().strip("'\"").strip("/")
     target_path = f"/{clean_name}"
 
+    # 1. Force reload server state
+    run_cmd(["mega-reload"])
     time.sleep(2)
 
-    # 1. Direct Export command with Auto-Yes
+    # 2. Try export command
     out1, err1, _ = run_cmd(["mega-export", "-a", target_path])
     link = extract_mega_link(out1 + " " + err1)
     if link:
         return link, clean_name
 
-    # 2. Query target export path
+    # 3. Direct query
     time.sleep(1)
     out2, err2, _ = run_cmd(["mega-export", target_path])
     link = extract_mega_link(out2 + " " + err2)
     if link:
         return link, clean_name
 
-    # 3. List all exports and search
-    out3, _, _ = run_cmd(["mega-export"])
-    for line in out3.splitlines():
-        if clean_name.lower() in line.lower():
-            link = extract_mega_link(line)
-            if link:
-                return link, clean_name
+    # 4. Check active export registry
+    active_exports = parse_all_exports()
+    if clean_name.lower() in active_exports:
+        return active_exports[clean_name.lower()], clean_name
 
-    # 4. Re-export (Delete and create fresh)
+    # 5. Delete and fresh export
     run_cmd(["mega-export", "-d", target_path])
     time.sleep(1)
     out4, err4, _ = run_cmd(["mega-export", "-a", target_path])
@@ -90,24 +110,23 @@ def export_and_get_link(target_name):
     if link:
         return link, clean_name
 
-    # 5. Last active export fallback
-    lines = [l.strip() for l in out3.splitlines() if l.strip()]
-    if lines:
-        for l in reversed(lines):
-            link = extract_mega_link(l)
-            if link:
-                return link, clean_name
+    # 6. Check registry once more
+    active_exports = parse_all_exports()
+    if active_exports:
+        # Return the most recent export if available
+        last_url = list(active_exports.values())[-1]
+        return last_url, clean_name
 
     return None, clean_name
 
 # Telegram Menu setup
 try:
     bot.set_my_commands([
-        types.BotCommand("login", "MEGA account login karein (Step-by-step)"),
+        types.BotCommand("login", "MEGA account login karein"),
         types.BotCommand("logout", "Account logout karein"),
-        types.BotCommand("status", "Check login status & user email"),
-        types.BotCommand("cancel", "Chal rahe process ko cancel karein"),
-        types.BotCommand("help", "Bot use karne ki guide")
+        types.BotCommand("status", "Check login status"),
+        types.BotCommand("cancel", "Process cancel karein"),
+        types.BotCommand("help", "Bot guide")
     ])
 except Exception as e:
     print(f"Menu setup notice: {e}")
@@ -121,32 +140,31 @@ time.sleep(2)
 def send_welcome(message):
     welcome_text = (
         "📁 <b>MEGA Auto-Importer & Share Bot</b>\n\n"
-        "Ye bot direct <b>Folder Links</b> ko cloud drive me add karke uska naya share link generate karta hai.\n\n"
-        "<b>📌 Menu Commands:</b>\n"
+        "Ye bot direct <b>Folder Links</b> ko cloud drive me add karke uska share link deta hai.\n\n"
+        "<b>📌 Commands:</b>\n"
         "🔹 <code>/login</code> — MEGA account login karein\n"
         "🔹 <code>/logout</code> — Active account logout karein\n"
         "🔹 <code>/status</code> — Active email check karein\n"
         "🔹 <code>/cancel</code> — Process cancel karein\n\n"
         "<b>Kaise use karein:</b>\n"
-        "1️⃣ <code>/login</code> par click karein aur apna Email/Password dein.\n"
-        "2️⃣ Login hone ke baad koi bhi <b>MEGA Folder Link</b> bhej dein."
+        "1. <code>/login</code> par click karke login karein.\n"
+        "2. Apna <b>MEGA Folder Link</b> bhej dein."
     )
     bot.reply_to(message, welcome_text, parse_mode="HTML")
 
 @bot.message_handler(commands=['cancel'])
 def handle_cancel(message):
     user_login_data.pop(message.chat.id, None)
-    bot.reply_to(message, "🚫 Current process cancel ho gaya hai.")
+    bot.reply_to(message, "🚫 Current process cancel ho gaya.")
 
-# ----------------- STEP-BY-STEP LOGIN -----------------
+# ----------------- LOGIN FLOW -----------------
 @bot.message_handler(commands=['login'])
 def start_login(message):
     chat_id = message.chat.id
     user_login_data[chat_id] = {'step': 'EMAIL'}
-    
     msg = bot.reply_to(
         message,
-        "📧 <b>Step 1/2:</b> Kripya apna <b>MEGA Email Address</b> bhejein:\n\n<i>(Cancel karne ke liye /cancel bhejein)</i>",
+        "📧 <b>Step 1/2:</b> Kripya apna <b>MEGA Email</b> bhejein:\n\n<i>(Cancel karne ke liye /cancel bhejein)</i>",
         parse_mode="HTML"
     )
     bot.register_next_step_handler(msg, process_email_step)
@@ -170,10 +188,9 @@ def process_email_step(message):
         return
 
     user_login_data[chat_id] = {'email': text, 'step': 'PASSWORD'}
-
     msg = bot.reply_to(
         message,
-        f"🔑 <b>Step 2/2:</b> Email <code>{html.escape(text)}</code> ke liye <b>MEGA Password</b> bhejein:\n\n<i>(Suraksha ke liye password chat se delete ho jayega)</i>",
+        f"🔑 <b>Step 2/2:</b> Email <code>{html.escape(text)}</code> ke liye <b>MEGA Password</b> bhejein:\n\n<i>(Password automatically delete ho jayega)</i>",
         parse_mode="HTML"
     )
     bot.register_next_step_handler(msg, process_password_step)
@@ -199,7 +216,7 @@ def process_password_step(message):
         bot.reply_to(message, "⚠️ Session expire ho gaya. Kripya <code>/login</code> phirse karein.", parse_mode="HTML")
         return
 
-    status_msg = bot.send_message(chat_id, "🔄 <b>MEGA Account verify kiya ja raha hai...</b>", parse_mode="HTML")
+    status_msg = bot.send_message(chat_id, "🔄 <b>MEGA Account login ho raha hai...</b>", parse_mode="HTML")
 
     run_cmd(["mega-logout"])
     stdout, stderr, code = run_cmd(["mega-login", email, password], timeout=40)
@@ -207,7 +224,7 @@ def process_password_step(message):
 
     if code == 0:
         bot.edit_message_text(
-            f"✅ <b>MEGA Login Safal Raha!</b>\n\n👤 <b>Logged in as:</b> <code>{html.escape(email)}</code>\n\nAb aap koi bhi <b>MEGA Folder Link</b> bhej sakte hain!",
+            f"✅ <b>MEGA Login Safal Raha!</b>\n\n👤 <b>Logged in as:</b> <code>{html.escape(email)}</code>\n\nAb aap direct koi bhi <b>MEGA Folder Link</b> bhej sakte hain!",
             chat_id=chat_id,
             message_id=status_msg.message_id,
             parse_mode="HTML"
@@ -215,7 +232,7 @@ def process_password_step(message):
     else:
         err = stderr if stderr else stdout
         bot.edit_message_text(
-            f"❌ <b>Login Fail:</b>\n<code>{html.escape(err)}</code>\n\n👉 <i>Dhyan rahe Email/Password sahi ho aur MEGA par 2FA off ho.</i>\nDobara try karne ke liye <code>/login</code> bhejein.",
+            f"❌ <b>Login Fail:</b>\n<code>{html.escape(err)}</code>\n\n👉 <i>Dhyan rahe Email/Password sahi ho aur 2FA off ho.</i>\nDobara try karne ke liye <code>/login</code> bhejein.",
             chat_id=chat_id,
             message_id=status_msg.message_id,
             parse_mode="HTML"
@@ -229,7 +246,7 @@ def handle_logout(message):
     
     if code == 0 or "Logged out" in stdout or "Not logged in" in stderr:
         bot.edit_message_text(
-            "🚪 <b>Successfully Logged Out!</b>\nAapka MEGA session clear ho gaya hai.",
+            "🚪 <b>Successfully Logged Out!</b>\nAapka MEGA session clear ho gaya.",
             chat_id=message.chat.id,
             message_id=msg.message_id,
             parse_mode="HTML"
@@ -255,7 +272,7 @@ def handle_status(message):
     else:
         bot.reply_to(
             message, 
-            "🔴 <b>Account Status: NOT LOGGED IN</b>\n\nKripya <code>/login</code> command se login karein.", 
+            "🔴 <b>Account Status: NOT LOGGED IN</b>\n\nKripya <code>/login</code> karein.", 
             parse_mode="HTML"
         )
 
@@ -265,14 +282,13 @@ def handle_mega_url(message):
     url = message.text.strip()
     
     if message.chat.id in user_login_data:
-        bot.reply_to(message, "⚠️ Pehle apna login process poora karein ya <code>/cancel</code> karein.", parse_mode="HTML")
+        bot.reply_to(message, "⚠️ Pehle apna login poora karein ya <code>/cancel</code> karein.", parse_mode="HTML")
         return
 
     if "mega.nz" not in url and "mega.co.nz" not in url:
-        bot.reply_to(message, "⚠️ Kripya ek valid MEGA link bhejein ya <code>/help</code> check karein.", parse_mode="HTML")
+        bot.reply_to(message, "⚠️ Kripya valid MEGA link bhejein ya <code>/help</code> check karein.", parse_mode="HTML")
         return
 
-    # Check login
     who_out, _, who_code = run_cmd(["mega-whoami"])
     if who_code != 0 or not who_out:
         bot.reply_to(
@@ -285,7 +301,8 @@ def handle_mega_url(message):
     status_msg = bot.reply_to(message, "⏳ <b>Folder ko Cloud Drive me import kiya ja raha hai...</b>")
 
     try:
-        # Pre-import snapshot
+        # Pre-import state snapshot
+        run_cmd(["mega-reload"])
         ls_before, _, _ = run_cmd(["mega-ls", "/"])
         before_set = set([x.strip().strip("'\"").strip("/") for x in ls_before.splitlines() if x.strip()])
         
@@ -302,7 +319,7 @@ def handle_mega_url(message):
             return
 
         bot.edit_message_text(
-            "⏳ <b>Drive me save ho gaya!</b> Ab Share Link generate kiya ja raha hai...",
+            "⏳ <b>Drive me save ho gaya!</b> Syncing cache & generating Share Link...",
             chat_id=message.chat.id,
             message_id=status_msg.message_id,
             parse_mode="HTML"
@@ -310,15 +327,16 @@ def handle_mega_url(message):
 
         target_name = None
 
-        # 1. Exact match from import stdout
+        # 1. Check from import output
         m_name = re.search(r'Imported.*?:?\s*/([^\r\n/]+)', imp_out + " " + imp_err, re.IGNORECASE)
         if m_name:
             target_name = m_name.group(1).strip().strip("'\"").strip("/")
 
-        # 2. Match from directory diff
+        # 2. Force reload cache and compare directory diff
         if not target_name:
             for _ in range(4):
-                time.sleep(2)
+                run_cmd(["mega-reload"])
+                time.sleep(1.5)
                 ls_after, _, _ = run_cmd(["mega-ls", "/"])
                 after_set = set([x.strip().strip("'\"").strip("/") for x in ls_after.splitlines() if x.strip()])
                 new_items = list(after_set - before_set)
@@ -341,7 +359,7 @@ def handle_mega_url(message):
             )
             return
 
-        # Export & fetch share link
+        # Export and fetch share link
         share_link, final_name = export_and_get_link(target_name)
 
         if share_link:
@@ -354,8 +372,11 @@ def handle_mega_url(message):
                 parse_mode="HTML"
             )
         else:
+            # Full Diagnostic Output if link still fails
+            all_exp_raw, _, _ = run_cmd(["mega-export"])
             bot.edit_message_text(
-                f"⚠️ Folder <code>{html.escape(final_name)}</code> Drive me add ho gaya hai, par link fetch nahi ho saka.",
+                f"⚠️ Folder <code>{html.escape(final_name)}</code> Drive me add ho gaya hai!\n\n"
+                f"📋 <b>Diagnostic Info:</b>\n<code>{html.escape(all_exp_raw if all_exp_raw else 'No export data')}</code>",
                 chat_id=message.chat.id,
                 message_id=status_msg.message_id,
                 parse_mode="HTML"
