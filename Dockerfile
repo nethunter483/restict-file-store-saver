@@ -3,7 +3,7 @@ FROM debian:12-slim
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-# System dependencies & Chromium libs
+# System packages & Playwright browser libraries
 RUN apt-get update && apt-get install -y \
     curl \
     gnupg \
@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y \
     fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
-# Official MEGAcmd
+# Official MEGAcmd for Debian 12
 RUN curl -fsSL https://mega.nz/linux/repo/Debian_12/amd64/megacmd_2.5.2-1.1_amd64.deb -o /tmp/megacmd.deb \
     && apt-get update \
     && apt-get install -y /tmp/megacmd.deb \
@@ -45,7 +45,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-RUN playwright install chromium
+RUN playwright install --with-deps chromium
 
 COPY . .
 
